@@ -62,6 +62,7 @@ Generated reports and model files are ignored by Git.
 | Standalone prediction CLI | `scripts/predict_torch.py` | Ready |
 | Workstation state-tree inference CLI | `scripts/predict_state_tree.py` | Ready |
 | Workstation prediction coordinate join | `scripts/append_patch_coordinates.py` | Ready |
+| State score maps (combined CSV, GeoPackage, PNGs) | `scripts/map_state_scores.py` | Ready |
 | Read-only pipeline validation CLI | `scripts/validate_pipeline.py` | Ready |
 | End-to-end 50-image showcase | `notebooks/CORE_pipeline_v1.ipynb` | Ready |
 
@@ -268,6 +269,30 @@ EPSG:5070 (NAD83 / Conus Albers), in metres. They are projected X/Y values,
 not longitude/latitude. The patch table also contains `na_ratio`; this join
 does not use it. Its name suggests a missing-data fraction, but its exact
 calculation is not documented in this repository.
+
+## Map state scores
+
+After the coordinate join, `scripts/map_state_scores.py` stacks one state's
+`predictions_USA_XX_part_*_with_coordinates.csv` parts into a single table and
+maps each score. Every patch is drawn as its real footprint: 512 x 512 pixels at
+0.6 m, i.e. a 307.2 m square centred on `center_x,center_y` in EPSG:5070.
+
+```powershell
+& $Python scripts\map_state_scores.py --predictions-dir "Z:\inference_outputs\<run-id>\states\USA_AL"
+```
+
+Outputs go to `<predictions-dir>\maps` (or `--output-dir`):
+
+- `combined_USA_AL.csv`: all parts stacked in part order, with a `source_part` column;
+- `patch_scores_USA_AL.gpkg`: one square polygon per patch with every column, for QGIS/ArcGIS;
+- `map_USA_AL_<score>.png`: one map each for `score_ev`, `veg_ev` (scale 1–5), the
+  seven `*_prob` columns and `shade_confidence` (scale 0–1).
+
+`--scores` limits which maps are drawn, `--boundary` draws any state or county
+outline file (reprojected to EPSG:5070) under the patches, and `--overwrite`
+replaces an earlier run. The script stops on duplicate images across parts or
+mismatched part columns; rows without coordinates stay in the combined CSV but
+are left out of the GeoPackage and maps, with a warning.
 
 ## Data contract
 
