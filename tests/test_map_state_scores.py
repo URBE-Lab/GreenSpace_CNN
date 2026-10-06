@@ -61,6 +61,34 @@ class MapStateScoresTests(unittest.TestCase):
         self.assertAlmostEqual((bounds[0] + bounds[2]) / 2, 978336.0)
         for score in map_state_scores.SCORES:
             self.assertTrue((self.output_dir / f"map_USA_AL_{score}.png").is_file())
+        self.assertTrue((self.output_dir / "mean_scores_USA_AL.tif").is_file())
+
+    def test_overlapping_patches_are_averaged(self) -> None:
+        import rasterio
+
+        frame = prediction_rows(0, 2)
+        # The second patch sits half a patch east, so the two share one column of cells.
+        frame.loc[1, ["center_x", "center_y"]] = [
+            frame.loc[0, "center_x"] + map_state_scores.PATCH_SIZE_M / 2,
+            frame.loc[0, "center_y"],
+        ]
+        frame["score_ev"] = [1.0, 5.0]
+        self.write_part(1, frame)
+
+        summary = map_state_scores.map_state(
+            self.state_dir, self.output_dir, scores=["score_ev"], dpi=40,
+        )
+
+        self.assertEqual(summary["max_overlap"], 2)
+        with rasterio.open(self.output_dir / "mean_scores_USA_AL.tif") as dataset:
+            self.assertEqual(dataset.crs.to_epsg(), 5070)
+            self.assertEqual(dataset.descriptions, ("score_ev", "patch_count"))
+            self.assertEqual((dataset.height, dataset.width), (2, 3))
+            self.assertAlmostEqual(dataset.res[0], 153.6)
+            mean, count = dataset.read(1), dataset.read(2)
+        for row in range(2):
+            self.assertEqual(list(mean[row]), [1.0, 3.0, 5.0])
+            self.assertEqual(list(count[row]), [1.0, 2.0, 1.0])
 
     def test_rows_without_coordinates_are_kept_in_csv_but_not_mapped(self) -> None:
         frame = prediction_rows(0, 3)
