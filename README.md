@@ -63,6 +63,7 @@ Generated reports and model files are ignored by Git.
 | Workstation state-tree inference CLI | `scripts/predict_state_tree.py` | Ready |
 | Workstation prediction coordinate join | `scripts/append_patch_coordinates.py` | Ready |
 | State score maps clipped to parks (combined CSV, GeoPackage, mean GeoTIFF, PNGs) | `scripts/map_state_scores.py` | Ready |
+| All-state maps and national combine | `scripts/map_all_states.py` | Ready |
 | Read-only pipeline validation CLI | `scripts/validate_pipeline.py` | Ready |
 | End-to-end 50-image showcase | `notebooks/CORE_pipeline_v1.ipynb` | Ready |
 
@@ -308,10 +309,40 @@ Outputs go to `<predictions-dir>\maps` (or `--output-dir`):
   (scale 1–5), the seven `*_prob` columns and `shade_confidence` (scale 0–1).
 
 `--scores` limits which maps are drawn and `--overwrite` replaces an earlier run.
-For now this runs on one state folder at a time (currently `USA_AL`). The script
+The script
 stops on duplicate images across parts or mismatched part columns; rows without
 coordinates stay in the combined CSV but are left out of the GeoPackage and maps,
 with a warning.
+
+## Map all states and combine them
+
+`scripts/map_all_states.py` runs the state mapping above for every `USA_XX`
+folder of a run, then combines the states into national outputs.
+
+```powershell
+& $Python scripts\map_all_states.py --states-dir "Z:\inference_outputs\<run-id>\states" --parks "<path>\ParkServe_Parks.shp" --image-root "Z:\GEE Derived" --skip-bad-tables
+```
+
+- States that already have complete maps are reused (`existing`), so an
+  interrupted run picks up where it stopped. `--overwrite` remaps them.
+- With `--image-root`, a state without `*_with_coordinates.csv` parts gets the
+  coordinate join first; `--skip-bad-tables` is passed on to it.
+- A state that fails is recorded and the run moves on. The command then exits
+  with an error naming the failed states; fix them and rerun with
+  `--states XX YY` (the national outputs still combine every mapped state).
+- Every state must use the same `--cell-size`, and either all or none with `--parks`.
+
+National outputs go to `<states-dir>\..\maps_USA` (or `--output-dir`) and are
+rebuilt on every run:
+
+- `combined_USA.csv`: every state's combined CSV, stacked;
+- `patch_scores_USA.gpkg`: every state's patch polygons in one `patches_USA` layer;
+- `mean_scores_USA.vrt`: a mosaic of the state GeoTIFFs with the same bands; open it
+  in QGIS/ArcGIS and keep it next to the `states` folder, since it points to the
+  state files. Where two states both have a value for a cell, the alphabetically later state's value is shown;
+- `map_USA_<score>.png`: one national map per score covering the lower 48 and DC
+  (Alaska, Hawaii and territories keep their own state maps);
+- `state_status_USA.csv`: what happened to each state in this run.
 
 ## Data contract
 

@@ -279,25 +279,45 @@ class PatchGrid:
             yield first, block
 
     def display(self, cell_values: np.ndarray) -> tuple[np.ndarray, tuple[float, ...]]:
-        """Cell values averaged into blocks of at most MAP_PIXELS per side, for PNGs.
+        blocks = BlockAverage(self.left, self.top, self.cell_size, self.shape)
+        blocks.add(self.rows, self.cols, cell_values)
+        return blocks.image(), blocks.extent
 
-        Averaging (rather than resampling) keeps small parks visible at state scale.
-        """
-        factor = max(1, math.ceil(max(self.shape) / MAP_PIXELS))
-        shape = (math.ceil(self.shape[0] / factor), math.ceil(self.shape[1] / factor))
-        valid = ~np.isnan(cell_values)
-        blocks = (self.rows[valid] // factor) * shape[1] + self.cols[valid] // factor
-        size = shape[0] * shape[1]
-        with np.errstate(invalid="ignore", divide="ignore"):
-            image = (
-                np.bincount(blocks, weights=cell_values[valid], minlength=size)
-                / np.bincount(blocks, minlength=size)
-            )
-        block = factor * self.cell_size
-        extent = (
-            self.left, self.left + shape[1] * block, self.top - shape[0] * block, self.top,
+
+class BlockAverage:
+    """Average grid cells into blocks of at most MAP_PIXELS per side, for PNGs.
+
+    Averaging (rather than resampling) keeps small parks visible at large scale.
+    ``add`` takes cell rows/columns counted from ``left, top``; cells outside the
+    grid are ignored.
+    """
+
+    def __init__(
+        self, left: float, top: float, cell_size: float, shape: tuple[int, int],
+    ) -> None:
+        self.factor = max(1, math.ceil(max(shape) / MAP_PIXELS))
+        self.cells = shape
+        self.shape = (math.ceil(shape[0] / self.factor), math.ceil(shape[1] / self.factor))
+        size = self.shape[0] * self.shape[1]
+        self.total = np.zeros(size)
+        self.count = np.zeros(size)
+        block = self.factor * cell_size
+        self.extent = (
+            left, left + self.shape[1] * block, top - self.shape[0] * block, top,
         )
-        return image.reshape(shape), extent
+
+    def add(self, rows: np.ndarray, cols: np.ndarray, values: np.ndarray) -> None:
+        keep = (
+            ~np.isnan(values) & (rows >= 0) & (rows < self.cells[0])
+            & (cols >= 0) & (cols < self.cells[1])
+        )
+        blocks = (rows[keep] // self.factor) * self.shape[1] + cols[keep] // self.factor
+        self.total += np.bincount(blocks, weights=values[keep], minlength=self.total.size)
+        self.count += np.bincount(blocks, minlength=self.count.size)
+
+    def image(self) -> np.ndarray:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return (self.total / self.count).reshape(self.shape)
 
 
 def write_geotiff(path: Path, grid: PatchGrid, bands: dict[str, np.ndarray]) -> None:
@@ -320,8 +340,8 @@ def write_geotiff(path: Path, grid: PatchGrid, bands: dict[str, np.ndarray]) -> 
 
 
 def draw_map(
-    grid: PatchGrid, cell_values: np.ndarray, patches: int, score: str, state: str,
-    path: Path, dpi: int, in_parks: bool,
+    image: np.ndarray, extent: tuple[float, ...], score: str, place: str, footnote: str,
+    path: Path, dpi: int,
 ) -> None:
     import matplotlib
 
@@ -335,9 +355,9 @@ def draw_map(
         "greens_trimmed", plt.get_cmap("Greens")(np.linspace(0.2, 1.0, 256)),
     ).with_extremes(bad=(1, 1, 1, 0))
     norm = Normalize(vmin=vmin, vmax=vmax)
-    image, extent = grid.display(cell_values)
 
-    fig, ax = plt.subplots(figsize=(8, 9), dpi=dpi)
+    aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])
+    fig, ax = plt.subplots(figsize=(9, min(max(9 * aspect, 4), 11) + 1.2), dpi=dpi)
     pad = 5_000
     ax.imshow(
         np.ma.masked_invalid(image), cmap=cmap, norm=norm, extent=extent,
@@ -347,21 +367,23 @@ def draw_map(
     ax.set_ylim(extent[2] - pad, extent[3] + pad)
     ax.set_aspect("equal")
     ax.set_axis_off()
-    ax.set_title(f"USA_{state} — {title}", loc="left", fontsize=13, color="#222222")
+    ax.set_title(f"{place} — {title}", loc="left", fontsize=13, color="#222222")
     colorbar = fig.colorbar(
         plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax,
         orientation="horizontal", fraction=0.04, pad=0.03,
     )
     colorbar.set_label(f"{score} (mean of overlapping patches)", color="#555555")
     colorbar.outline.set_visible(False)
-    fig.text(
-        0.01, 0.01,
-        f"{patches:,} patches{' clipped to parks' if in_parks else ''} · "
-        f"{PATCH_SIZE_M:g} m squares averaged on a {grid.cell_size:g} m grid · {CRS}",
-        fontsize=8, color="#777777",
-    )
+    fig.text(0.01, 0.01, footnote, fontsize=8, color="#777777")
     fig.savefig(path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+def map_footnote(patches: int, in_parks: bool, cell_size: float) -> str:
+    return (
+        f"{patches:,} patches{' clipped to parks' if in_parks else ''} · "
+        f"{PATCH_SIZE_M:g} m squares averaged on a {cell_size:g} m grid · {CRS}"
+    )
 
 
 def map_state(
@@ -419,10 +441,9 @@ def map_state(
     means = {score: grid.mean(located[score].to_numpy(dtype=float)) for score in scores}
     write_geotiff(tif, grid, {**means, "patch_count": count})
     for score, png in zip(scores, pngs):
-        draw_map(
-            grid, means[score], int(in_park.sum()), score, state, png, dpi,
-            parks_path is not None,
-        )
+        image, extent = grid.display(means[score])
+        footnote = map_footnote(int(in_park.sum()), parks_path is not None, grid.cell_size)
+        draw_map(image, extent, score, f"USA_{state}", footnote, png, dpi)
     return {
         "state": state, "parts": len(parts), "rows": len(combined),
         "mapped": int(in_park.sum()), "outside_parks": int((~in_park).sum()),
