@@ -62,7 +62,7 @@ Generated reports and model files are ignored by Git.
 | Standalone prediction CLI | `scripts/predict_torch.py` | Ready |
 | Workstation state-tree inference CLI | `scripts/predict_state_tree.py` | Ready |
 | Workstation prediction coordinate join | `scripts/append_patch_coordinates.py` | Ready |
-| State score maps (combined CSV, GeoPackage, mean GeoTIFF, PNGs) | `scripts/map_state_scores.py` | Ready |
+| State score maps clipped to parks (combined CSV, GeoPackage, mean GeoTIFF, PNGs) | `scripts/map_state_scores.py` | Ready |
 | Read-only pipeline validation CLI | `scripts/validate_pipeline.py` | Ready |
 | End-to-end 50-image showcase | `notebooks/CORE_pipeline_v1.ipynb` | Ready |
 
@@ -275,29 +275,43 @@ calculation is not documented in this repository.
 After the coordinate join, `scripts/map_state_scores.py` stacks one state's
 `predictions_USA_XX_part_*_with_coordinates.csv` parts into a single table and
 maps each score. Every patch is its real footprint: 512 x 512 pixels at 0.6 m,
-i.e. a 307.2 m square centred on `center_x,center_y` in EPSG:5070. Where patches
-overlap, each map shows the mean score of all patches covering the spot. Means
-are computed on a 153.6 m grid (half a patch, `--cell-size`), and each footprint
-snaps to the nearest grid lines, so it may shift by up to half a cell.
+i.e. a 307.2 m square centred on `center_x,center_y` in EPSG:5070.
+
+With `--parks`, only the parts of each patch inside a park polygon are kept
+(any park in the file, not only the patch's own `park_code`). The parks file
+can be in any CRS; it is reprojected to EPSG:5070 and only the parks around the
+state's patches are read.
+
+Where patches overlap, the GeoTIFF and maps show the mean score of all patches
+covering each spot. Means are computed on a 38.4 m grid (an eighth of a patch,
+`--cell-size`); each footprint snaps to the nearest grid lines, so it may shift
+by up to half a cell, and with `--parks` a cell is kept when its centre is
+inside a park.
 
 ```powershell
-& $Python scripts\map_state_scores.py --predictions-dir "Z:\inference_outputs\<run-id>\states\USA_AL"
+& $Python scripts\map_state_scores.py --predictions-dir "Z:\inference_outputs\<run-id>\states\USA_AL" --parks "<path>\ParkServe_Parks.shp"
 ```
+
+The `.shp` needs its `.shx`, `.dbf` and `.prj` files beside it. On OneDrive, make
+sure the folder is synced to the computer, not only online.
 
 Outputs go to `<predictions-dir>\maps` (or `--output-dir`):
 
-- `combined_USA_AL.csv`: all parts stacked in part order, with a `source_part` column;
-- `patch_scores_USA_AL.gpkg`: one square polygon per patch with every column, for QGIS/ArcGIS
-  (unaveraged; overlapping patches stay separate);
+- `combined_USA_AL.csv`: all parts stacked in part order, with a `source_part` column
+  and, with `--parks`, `park_fraction` (share of the patch inside parks, 0–1);
+- `patch_scores_USA_AL.gpkg`: one polygon per patch with every column, for QGIS/ArcGIS
+  (unaveraged; overlapping patches stay separate). With `--parks` each polygon is the
+  part of the patch inside parks, and patches entirely outside parks are left out;
 - `mean_scores_USA_AL.tif`: one band per mapped score holding the mean of the patches
   covering each cell, plus a `patch_count` band (needs `rasterio`);
 - `map_USA_AL_<score>.png`: one map of those means each for `score_ev`, `veg_ev`
   (scale 1–5), the seven `*_prob` columns and `shade_confidence` (scale 0–1).
 
 `--scores` limits which maps are drawn and `--overwrite` replaces an earlier run.
-For now this runs on one state folder at a time (currently `USA_AL`). The script stops on duplicate images across parts or
-mismatched part columns; rows without coordinates stay in the combined CSV but
-are left out of the GeoPackage and maps, with a warning.
+For now this runs on one state folder at a time (currently `USA_AL`). The script
+stops on duplicate images across parts or mismatched part columns; rows without
+coordinates stay in the combined CSV but are left out of the GeoPackage and maps,
+with a warning.
 
 ## Data contract
 

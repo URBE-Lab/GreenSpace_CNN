@@ -76,7 +76,7 @@ class MapStateScoresTests(unittest.TestCase):
         self.write_part(1, frame)
 
         summary = map_state_scores.map_state(
-            self.state_dir, self.output_dir, scores=["score_ev"], dpi=40,
+            self.state_dir, self.output_dir, scores=["score_ev"], dpi=40, cell_size=153.6,
         )
 
         self.assertEqual(summary["max_overlap"], 2)
@@ -102,6 +102,41 @@ class MapStateScoresTests(unittest.TestCase):
 
         self.assertEqual((summary["rows"], summary["mapped"]), (3, 2))
         self.assertEqual(summary["missing_coordinates"], 1)
+
+    def test_parks_clip_patches_and_mask_cells(self) -> None:
+        import geopandas as gpd
+        import rasterio
+        import shapely
+
+        frame = prediction_rows(0, 3)
+        self.write_part(1, frame)
+        x0, y0 = frame.loc[0, "center_x"], frame.loc[0, "center_y"]
+        half = map_state_scores.PATCH_SIZE_M / 2
+        # One park covering the west half of patch 0; patches 1 and 2 are outside it.
+        park = shapely.box(x0 - half - 50, y0 - half - 50, x0, y0 + half + 50)
+        parks_path = Path(self.temporary.name) / "parks.gpkg"
+        gpd.GeoDataFrame({"name": ["park"]}, geometry=[park], crs="EPSG:5070").to_crs(
+            "EPSG:4326"
+        ).to_file(parks_path)
+
+        summary = map_state_scores.map_state(
+            self.state_dir, self.output_dir, scores=["score_ev"], dpi=40,
+            cell_size=153.6, parks_path=parks_path,
+        )
+
+        self.assertEqual((summary["mapped"], summary["outside_parks"]), (1, 2))
+        combined = pd.read_csv(self.output_dir / "combined_USA_AL.csv")
+        self.assertAlmostEqual(combined.loc[0, "park_fraction"], 0.5, places=3)
+        self.assertEqual(list(combined.loc[1:, "park_fraction"]), [0.0, 0.0])
+        patches = gpd.read_file(self.output_dir / "patch_scores_USA_AL.gpkg")
+        self.assertEqual(list(patches["image_filename"]), ["img_0.jpg"])
+        self.assertAlmostEqual(
+            patches.geometry.iloc[0].area, map_state_scores.PATCH_SIZE_M**2 / 2, delta=50,
+        )
+        with rasterio.open(self.output_dir / "mean_scores_USA_AL.tif") as dataset:
+            count = dataset.read(2)
+        # Only patch 0's west column of 153.6 m cells (2 cells) lies inside the park.
+        self.assertEqual(int((count > 0).sum()), 2)
 
     def test_refuses_duplicates_across_parts(self) -> None:
         self.write_part(1, prediction_rows(0, 2))
